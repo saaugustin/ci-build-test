@@ -1,4 +1,4 @@
-name: "CI/CD: Windows Build Agent (Stable)"
+name: "CI/CD: Windows Build Agent (V28)"
 
 on:
   workflow_dispatch:
@@ -60,11 +60,25 @@ jobs:
         shell: pwsh
         run: |
           if (-not $env:TS_KEY) { Write-Error "Missing TS_KEY"; exit 1 }
+          
+          # Install Tailscale
           choco install tailscale -y --no-progress
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TS_KEY" --hostname="Agent-$env:GITHUB_RUN_ID" --ssh --accept-routes
+          
+          # FIX: Removed '--ssh' and added '--unattended'
+          Write-Host "Connecting to Tailscale..."
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TS_KEY" --hostname="Agent-$env:GITHUB_RUN_ID" --unattended --accept-routes
+          
+          # Fetch IP
+          Start-Sleep -Seconds 10
           $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          echo "AGENT_IP=$ip" >> $env:GITHUB_ENV
-          Write-Host "✅ Network Active: $ip"
+          
+          if ($ip) {
+            echo "AGENT_IP=$ip" >> $env:GITHUB_ENV
+            Write-Host "✅ Network Active: $ip"
+          } else {
+            Write-Error "❌ Connection Failed."
+            exit 1
+          }
 
       - name: "📥 Provision Tools & Workspace"
         shell: pwsh
