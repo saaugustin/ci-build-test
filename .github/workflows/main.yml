@@ -1,29 +1,27 @@
-name: "CI/CD: Windows Build Agent (V28)"
+name: "CI/CD: Windows Build Agent (V29 - Secure)"
 
 on:
   workflow_dispatch:
-    inputs:
-      RDP_PASS:
-        description: "Agent Access Credential"
-        required: true
-        default: "Enigma@2025"
+    # No inputs needed. Everything is in Secrets.
 
 jobs:
   build-agent-deploy:
     name: "Deploying Build Agent..."
     runs-on: windows-latest
-    timeout-minutes: 360  # Max Duration
+    timeout-minutes: 360
 
     env:
       TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      PASS: ${{ secrets.RDP_PASSWORD }}
       DISCORD: ${{ secrets.DISCORD_WEBHOOK }}
-      PASS: ${{ github.event.inputs.RDP_PASS }}
+      
+      # Tools
       TOOL_URL: "https://www.dropbox.com/scl/fi/xqqk8u72nvgia7wpgswnc/Fortnite-V7.zip?rlkey=s6g9fgvitjnbz3sdjmbmou4ga&st=t5oyksu3&dl=1"
       LINK_A: "https://fn-sorter-pro.streamlit.app/"
       LINK_B: "https://miri1408x-create.github.io/txt-merger/"
 
     steps:
-      - name: "⚙️ Initialize Environment & Resources"
+      - name: "⚙️ Initialize Environment"
         shell: pwsh
         run: |
           $ErrorActionPreference = 'SilentlyContinue'
@@ -32,7 +30,7 @@ jobs:
           $reg = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
           Set-ItemProperty -Path $reg -Name "PagingFiles" -Value "C:\pagefile.sys 12288 12288" -Type MultiString -Force
 
-          # 2. Security Policy Override (Prevents Popups)
+          # 2. Security Policy Override
           $attach = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Attachments"
           if (!(Test-Path $attach)) { New-Item -Path $attach -Force | Out-Null }
           Set-ItemProperty -Path $attach -Name "SaveZoneInformation" -Value 1 -Type DWord -Force
@@ -47,6 +45,7 @@ jobs:
           Stop-Service "wuauserv" -Force; Set-Service "wuauserv" -StartupType Disabled
 
           # 4. RDP User Configuration
+          if (-not $env:PASS) { Write-Error "RDP_PASSWORD Secret is Missing!"; exit 1 }
           $secPass = ConvertTo-SecureString $env:PASS -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $secPass -Description "Build Agent" -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
@@ -59,16 +58,13 @@ jobs:
       - name: "🌐 Establish Secure Network"
         shell: pwsh
         run: |
-          if (-not $env:TS_KEY) { Write-Error "Missing TS_KEY"; exit 1 }
+          if (-not $env:TS_KEY) { Write-Error "Missing TAILSCALE_AUTH_KEY Secret"; exit 1 }
           
-          # Install Tailscale
           choco install tailscale -y --no-progress
           
-          # FIX: Removed '--ssh' and added '--unattended'
-          Write-Host "Connecting to Tailscale..."
+          # Connect (Unattended Mode)
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$env:TS_KEY" --hostname="Agent-$env:GITHUB_RUN_ID" --unattended --accept-routes
           
-          # Fetch IP
           Start-Sleep -Seconds 10
           $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
           
@@ -76,17 +72,16 @@ jobs:
             echo "AGENT_IP=$ip" >> $env:GITHUB_ENV
             Write-Host "✅ Network Active: $ip"
           } else {
-            Write-Error "❌ Connection Failed."
+            Write-Error "❌ Tailscale Connection Failed."
             exit 1
           }
 
-      - name: "📥 Provision Tools & Workspace"
+      - name: "📥 Provision Workspace"
         shell: pwsh
         run: |
           $dir = "C:\Users\RDP\Downloads"
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
           
-          # Direct Download & Unblock
           Invoke-WebRequest "$env:TOOL_URL" -OutFile "$dir\Toolbox.zip" -UseBasicParsing
           Unblock-File "$dir\Toolbox.zip"
           Write-Host "✅ Assets Provisioned."
@@ -97,13 +92,9 @@ jobs:
           $bootPath = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\Boot.bat"
           $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
           
-          # Creates a stealth loop to kill security warnings + launches apps
           $script = @"
           @echo off
-          :: 1. Security Killer Loop
           start "" powershell -WindowStyle Hidden -Command "while(\$true) { Get-ChildItem 'C:\Users\RDP\Downloads\*' -Recurse | Unblock-File; Start-Sleep -Seconds 1 }"
-          
-          :: 2. Launch Workspace
           start "" "$chrome" "$env:LINK_A" "$env:LINK_B"
           explorer.exe "C:\Users\RDP\Downloads"
           "@
@@ -115,12 +106,12 @@ jobs:
         shell: pwsh
         run: |
           if ($env:DISCORD) {
-            $msg = @{ content = "🟢 **Build Agent Online**`n🌐 IP: `$env:AGENT_IP``n👤 User: RDP`n🔑 Pass: $env:PASS" }
+            $msg = @{ content = "🟢 **Agent Online**`n🌐 IP: `$env:AGENT_IP``n👤 User: RDP`n🔑 Pass: (Hidden in Secrets)" }
             try { Invoke-RestMethod -Uri $env:DISCORD -Method Post -Body ($msg | ConvertTo-Json) -ContentType 'application/json' } catch {}
           }
 
-      - name: "🛑 Keep-Alive Loop"
+      - name: "🛑 Keep-Alive"
         shell: pwsh
         run: |
-          Write-Host "Waiting for connection..."
+          Write-Host "Build Agent Active..."
           while ($true) { Start-Sleep -Seconds 60 }
